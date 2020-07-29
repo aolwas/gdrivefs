@@ -53,7 +53,7 @@ class GoogleDriveFileSystem(AbstractFileSystem):
 
     def __init__(self, root_file_id=None, token="browser",
                  access="full_control", spaces='drive',
-                 tokens_file=None, **kwargs):
+                 tokens_file=None, credentials=None, **kwargs):
         super().__init__(**kwargs)
         self.access = access
         self.scopes = [scope_dict[access]]
@@ -62,14 +62,16 @@ class GoogleDriveFileSystem(AbstractFileSystem):
         self.spaces = spaces
         self.root_file_id = root_file_id or 'root'
         self.load_tokens()
+        self.credentials = credentials
         self.connect(method=token)
-        self.ls("")
 
     def connect(self, method=None):
         if method == 'browser':
             self._connect_browser()
         elif method == 'cache':
             self._connect_cache()
+        elif method == 'credentials':
+            self._connect_credentials()
         else:
             raise ValueError(f"Invalid connection method `{method}`.")
 
@@ -104,6 +106,12 @@ class GoogleDriveFileSystem(AbstractFileSystem):
         srv = build('drive', 'v3', credentials=credentials)
         self._drives = srv.drives()
         self.service = srv.files()
+
+    def _connect_credentials(self):
+        srv = build('drive', 'v3', credentials=self.credentials)
+        self._drives = srv.drives()
+        self.service = srv.files()
+
 
     def info(self, path, trashed=False, **kwargs):
         if self._parent(path) in self.dircache:
@@ -211,6 +219,9 @@ class GoogleDriveFileSystem(AbstractFileSystem):
         items = path.strip('/').split('/')
         if path in ["", "/", "root", self.root_file_id]:
             return self.root_file_id
+        if path.startswith("gid:"):
+            # path is an id
+            return path[4:]
         if parent is None:
             parent = self.root_file_id
         top_file_id = self._get_directory_child_by_name(items[0], parent,
@@ -243,6 +254,23 @@ class GoogleDriveFileSystem(AbstractFileSystem):
 
     def _open(self, path, mode="rb", **kwargs):
         return GoogleDriveFile(self, path, mode=mode, **kwargs)
+
+    def search(self, q):
+        while True:
+            response = (
+                self.service()
+                .list(
+                    q=q,
+                    spaces="drive",
+                    fields="nextPageToken,files(id,name,mimeType,parents,fullFileExtension,size,createdTime,modifiedTime,webContentLink,trashed)",
+                )
+                .execute()
+            )
+            for item in response.get("files", []):
+                yield item
+            page_token = response.get("nextPageToken", None)
+            if page_token is None:
+                break
 
 
 DEFAULT_BLOCK_SIZE = 5 * 2 ** 20
